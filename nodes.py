@@ -7,7 +7,7 @@ class WanKeyframeBuilder:
     Places keyframe images at specific positions along a timeline with controllable
     influence strength. Designed to work with WanVideoImageToVideoEncode node.
     
-    - First and last keyframes get full lock (default 1.0)
+    - First and last keyframes get independent strengths
     - Middle keyframes get adjustable influence (default 0.8) for smoother motion
     - Non-keyframe positions are gray (0.5) for the model to generate freely
     """
@@ -33,14 +33,24 @@ class WanKeyframeBuilder:
                         "tooltip": "Even: auto-distribute keyframes. Manual: use frame position inputs.",
                     },
                 ),
-                "first_last_strength": (
+                "first_strength": (
                     "FLOAT",
                     {
                         "default": 1.0,
                         "min": 0.0,
                         "max": 1.0,
                         "step": 0.05,
-                        "tooltip": "Mask strength for first and last keyframes. 1.0 = fully locked.",
+                        "tooltip": "Mask strength for the FIRST keyframe. 1.0 = fully locked.",
+                    },
+                ),
+                "last_strength": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.05,
+                        "tooltip": "Mask strength for the LAST keyframe. 1.0 = fully locked.",
                     },
                 ),
                 "middle_strength": (
@@ -53,14 +63,86 @@ class WanKeyframeBuilder:
                         "tooltip": "Mask strength for middle keyframes. 0.8 gives the model some freedom to interpret the pose.",
                     },
                 ),
-                "frame_1": ("INT", {"default": 0, "min": 0, "max": 4095, "step": 1, "tooltip": "Position for keyframe 1 (used in manual mode)"}),
-                "frame_2": ("INT", {"default": 20, "min": 0, "max": 4095, "step": 1, "tooltip": "Position for keyframe 2 (used in manual mode)"}),
-                "frame_3": ("INT", {"default": 40, "min": 0, "max": 4095, "step": 1, "tooltip": "Position for keyframe 3 (used in manual mode)"}),
-                "frame_4": ("INT", {"default": 60, "min": 0, "max": 4095, "step": 1, "tooltip": "Position for keyframe 4 (used in manual mode)"}),
-                "frame_5": ("INT", {"default": 80, "min": 0, "max": 4095, "step": 1, "tooltip": "Position for keyframe 5 (used in manual mode)"}),
-                "frame_6": ("INT", {"default": 100, "min": 0, "max": 4095, "step": 1, "tooltip": "Position for keyframe 6 (used in manual mode)"}),
-                "frame_7": ("INT", {"default": 120, "min": 0, "max": 4095, "step": 1, "tooltip": "Position for keyframe 7 (used in manual mode)"}),
-                "frame_8": ("INT", {"default": 140, "min": 0, "max": 4095, "step": 1, "tooltip": "Position for keyframe 8 (used in manual mode)"}),
+                "frame_1": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 4095,
+                        "step": 1,
+                        "tooltip": "Position for keyframe 1 (used in manual mode)",
+                    },
+                ),
+                "frame_2": (
+                    "INT",
+                    {
+                        "default": 20,
+                        "min": 0,
+                        "max": 4095,
+                        "step": 1,
+                        "tooltip": "Position for keyframe 2 (used in manual mode)",
+                    },
+                ),
+                "frame_3": (
+                    "INT",
+                    {
+                        "default": 40,
+                        "min": 0,
+                        "max": 4095,
+                        "step": 1,
+                        "tooltip": "Position for keyframe 3 (used in manual mode)",
+                    },
+                ),
+                "frame_4": (
+                    "INT",
+                    {
+                        "default": 60,
+                        "min": 0,
+                        "max": 4095,
+                        "step": 1,
+                        "tooltip": "Position for keyframe 4 (used in manual mode)",
+                    },
+                ),
+                "frame_5": (
+                    "INT",
+                    {
+                        "default": 80,
+                        "min": 0,
+                        "max": 4095,
+                        "step": 1,
+                        "tooltip": "Position for keyframe 5 (used in manual mode)",
+                    },
+                ),
+                "frame_6": (
+                    "INT",
+                    {
+                        "default": 100,
+                        "min": 0,
+                        "max": 4095,
+                        "step": 1,
+                        "tooltip": "Position for keyframe 6 (used in manual mode)",
+                    },
+                ),
+                "frame_7": (
+                    "INT",
+                    {
+                        "default": 120,
+                        "min": 0,
+                        "max": 4095,
+                        "step": 1,
+                        "tooltip": "Position for keyframe 7 (used in manual mode)",
+                    },
+                ),
+                "frame_8": (
+                    "INT",
+                    {
+                        "default": 140,
+                        "min": 0,
+                        "max": 4095,
+                        "step": 1,
+                        "tooltip": "Position for keyframe 8 (used in manual mode)",
+                    },
+                ),
             },
             "optional": {
                 "image2": ("IMAGE",),
@@ -76,7 +158,7 @@ class WanKeyframeBuilder:
     RETURN_TYPES = ("IMAGE", "MASK", "IMAGE")
     RETURN_NAMES = ("images", "masks", "keyframes")
     FUNCTION = "build_sequence"
-    CATEGORY = "WanVideoWrapper"
+    CATEGORY = "WanKeyframeBuilder"
 
     def _prepare_single_frame(self, img):
         """Ensure image shape = [1, H, W, C]."""
@@ -91,7 +173,8 @@ class WanKeyframeBuilder:
         image1,
         num_frames,
         spacing_mode,
-        first_last_strength,
+        first_strength,
+        last_strength,
         middle_strength,
         frame_1,
         frame_2,
@@ -154,8 +237,14 @@ class WanKeyframeBuilder:
 
         # Manual frame indices (we only use first N)
         manual_frames = [
-            frame_1, frame_2, frame_3, frame_4,
-            frame_5, frame_6, frame_7, frame_8
+            frame_1,
+            frame_2,
+            frame_3,
+            frame_4,
+            frame_5,
+            frame_6,
+            frame_7,
+            frame_8,
         ][:N]
 
         # Determine keyframe anchor indices
@@ -176,19 +265,24 @@ class WanKeyframeBuilder:
                 ]
 
         # Apply keyframes
-        for i, (anchor, img_tensor) in enumerate(zip(key_idx, used_imgs)):
-            img = img_tensor[0]  # [C, H, W]
+        for anchor, img_tensor in zip(key_idx, used_imgs):
+            img = img_tensor[0]  # [H, W, C]
 
             # Place keyframe image
             images_out[anchor] = img
 
             # Set mask strength based on position
-            if anchor == key_idx[0] or anchor == key_idx[-1]:
-                masks_out[anchor] = first_last_strength
+            if anchor == key_idx[0] and anchor == key_idx[-1]:
+                # Only one keyframe
+                masks_out[anchor] = first_strength
+            elif anchor == key_idx[0]:
+                masks_out[anchor] = first_strength
+            elif anchor == key_idx[-1]:
+                masks_out[anchor] = last_strength
             else:
                 masks_out[anchor] = middle_strength
 
-        # Build keyframes-only batch [N, C, H, W]
+        # Build keyframes-only batch [N, H, W, C]
         keyframes_batch = torch.cat(used_imgs, dim=0)
 
         return images_out, masks_out, keyframes_batch
@@ -204,10 +298,12 @@ class WanKeyframeBuilderContinuation(WanKeyframeBuilder):
     low influence, giving the model context for motion trajectory.
     """
 
+    CATEGORY = "WanKeyframeBuilder"
+
     @classmethod
     def INPUT_TYPES(cls):
         base_inputs = WanKeyframeBuilder.INPUT_TYPES()
-        
+
         # Add continuation inputs to required
         base_inputs["required"]["continuation_strength"] = (
             "FLOAT",
@@ -229,10 +325,13 @@ class WanKeyframeBuilderContinuation(WanKeyframeBuilder):
                 "tooltip": "Frames between continuation frames and first keyframe. Minimum 3 to fit continuation context.",
             },
         )
-        
+
         # Add continuation image to optional
-        base_inputs["optional"]["continuation_image"] = ("IMAGE", {"tooltip": "Last frame from previous generation for smoother transitions."})
-        
+        base_inputs["optional"]["continuation_image"] = (
+            "IMAGE",
+            {"tooltip": "Last frame from previous generation for smoother transitions."},
+        )
+
         return base_inputs
 
     def build_sequence(
@@ -240,7 +339,8 @@ class WanKeyframeBuilderContinuation(WanKeyframeBuilder):
         image1,
         num_frames,
         spacing_mode,
-        first_last_strength,
+        first_strength,
+        last_strength,
         middle_strength,
         frame_1,
         frame_2,
@@ -299,22 +399,22 @@ class WanKeyframeBuilderContinuation(WanKeyframeBuilder):
             # Ensure 4D tensor [B, H, W, C]
             if cont_img.ndim == 3:
                 cont_img = cont_img.unsqueeze(0)
-            
+
             # Take last 3 frames (or fewer if less provided)
             num_cont = min(3, cont_img.shape[0])
             cont_img = cont_img[-num_cont:]  # Take last N frames
-            
+
             # Resize each frame if needed
             for i in range(cont_img.shape[0]):
-                frame = cont_img[i:i+1]  # Keep as [1, H, W, C]
+                frame = cont_img[i : i + 1]  # Keep as [1, H, W, C]
                 if frame.shape[1] != h or frame.shape[2] != w:
                     # Resize to match keyframe resolution
                     frame = frame.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
                     frame = torch.nn.functional.interpolate(
                         frame,
                         size=(h, w),
-                        mode='bilinear',
-                        align_corners=False
+                        mode="bilinear",
+                        align_corners=False,
                     )
                     frame = frame.permute(0, 2, 3, 1)  # [B, C, H, W] -> [B, H, W, C]
                 cont_frames.append(frame[0])  # Store as [H, W, C]
@@ -333,8 +433,14 @@ class WanKeyframeBuilderContinuation(WanKeyframeBuilder):
 
         # Manual frame indices (we only use first N)
         manual_frames = [
-            frame_1, frame_2, frame_3, frame_4,
-            frame_5, frame_6, frame_7, frame_8
+            frame_1,
+            frame_2,
+            frame_3,
+            frame_4,
+            frame_5,
+            frame_6,
+            frame_7,
+            frame_8,
         ][:N]
 
         # Calculate offset for first keyframe if continuation is used
@@ -370,15 +476,20 @@ class WanKeyframeBuilderContinuation(WanKeyframeBuilder):
                 masks_out[i] = continuation_strength
 
         # Apply keyframes
-        for i, (anchor, img_tensor) in enumerate(zip(key_idx, used_imgs)):
+        for anchor, img_tensor in zip(key_idx, used_imgs):
             img = img_tensor[0]  # [H, W, C]
 
             # Place keyframe image
             images_out[anchor] = img
 
             # Set mask strength based on position
-            if anchor == key_idx[0] or anchor == key_idx[-1]:
-                masks_out[anchor] = first_last_strength
+            if anchor == key_idx[0] and anchor == key_idx[-1]:
+                # Only one keyframe
+                masks_out[anchor] = first_strength
+            elif anchor == key_idx[0]:
+                masks_out[anchor] = first_strength
+            elif anchor == key_idx[-1]:
+                masks_out[anchor] = last_strength
             else:
                 masks_out[anchor] = middle_strength
 
