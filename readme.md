@@ -29,7 +29,7 @@ Advanced keyframe builder for multi-segment video generation with continuation s
 - SVI-specific outputs for experimental SVI 2.0 workflows
 
 **Inputs:**
-- `image1`: Reference image for HuMo/quality (included in keyframes output, NOT placed on timeline)
+- `image1`: Reference image for HuMo/quality 
 - `image2-8`: Timeline keyframes (optional, placed on timeline)
 - `continuation_image`: Last N frames from previous generation
 - `continuation_frames`: Number of frames to use (default 3)
@@ -183,3 +183,4 @@ Designed for use with:
 ## License
 
 [Your License Here]
+
