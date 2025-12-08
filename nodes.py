@@ -285,7 +285,7 @@ class WanKeyframeBuilder:
 
 class WanKeyframeBuilderContinuation:
     """
-    Keyframe Timeline Builder with Continuation Support
+    Keyframe Timeline Builder with Continuation Support + SVI Outputs
     
     Designed for multi-pass video generation where HuMo handles quality via
     reference images. Continuation frames provide motion context without a
@@ -295,6 +295,10 @@ class WanKeyframeBuilderContinuation:
     - Keyframes (image2+) are distributed across remaining timeline
     - image1 is included in keyframes output for HuMo but NOT placed on timeline
     - Strength can be uniform or decay from start to end
+    
+    SVI-Specific Outputs:
+    - svi_reference_only: Timeline filled entirely with image1 (for SVI-Shot reference padding)
+    - svi_keyframe_segments: Timeline where each segment is filled with its corresponding keyframe
     """
 
     @classmethod
@@ -350,13 +354,13 @@ class WanKeyframeBuilderContinuation:
                         "min": 1,
                         "max": 64,
                         "step": 1,
-                        "tooltip": "Number of frames to use from continuation input.",
+                        "tooltip": "Number of frames to use from continuation input (taken from END of previous video).",
                     },
                 ),
                 "continuation_strength_mode": (
                     ["uniform", "decay"],
                     {
-                        "tooltip": "Uniform: all continuation frames use same strength. Decay: exponential decay from ceiling to floor.",
+                        "tooltip": "Uniform: all continuation frames use same strength. Decay: exponential decay from start to end.",
                     },
                 ),
                 "continuation_strength": (
@@ -369,24 +373,24 @@ class WanKeyframeBuilderContinuation:
                         "tooltip": "Strength for continuation frames (uniform mode).",
                     },
                 ),
-                "continuation_strength_ceiling": (
+                "continuation_strength_start": (
                     "FLOAT",
                     {
                         "default": 0.8,
                         "min": 0.0,
                         "max": 1.0,
                         "step": 0.05,
-                        "tooltip": "Starting strength for newest continuation frame (decay mode).",
+                        "tooltip": "Starting strength for first continuation frame (decay mode).",
                     },
                 ),
-                "continuation_strength_floor": (
+                "continuation_strength_end": (
                     "FLOAT",
                     {
                         "default": 0.2,
                         "min": 0.0,
                         "max": 1.0,
                         "step": 0.05,
-                        "tooltip": "Minimum strength for oldest continuation frames (decay mode).",
+                        "tooltip": "Ending strength for last continuation frame (decay mode).",
                     },
                 ),
                 "continuation_decay_rate": (
@@ -396,7 +400,24 @@ class WanKeyframeBuilderContinuation:
                         "min": 0.1,
                         "max": 10.0,
                         "step": 0.1,
-                        "tooltip": "Exponential decay rate. Higher = sharper drop to floor. 3.0 = moderate, 5.0+ = aggressive.",
+                        "tooltip": "Exponential decay rate. Higher = sharper drop. 3.0 = moderate, 5.0+ = aggressive.",
+                    },
+                ),
+                "place_first_keyframe": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Place image2 (first timeline keyframe) immediately after continuation frames.",
+                    },
+                ),
+                "first_keyframe_strength": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.05,
+                        "tooltip": "Mask strength for first placed keyframe (if place_first_keyframe is enabled).",
                     },
                 ),
                 "frame_2": (
@@ -487,8 +508,8 @@ class WanKeyframeBuilderContinuation:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE")
-    RETURN_NAMES = ("images", "masks", "keyframes")
+    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE", "IMAGE", "IMAGE")
+    RETURN_NAMES = ("images", "masks", "keyframes", "svi_reference_only", "svi_keyframe_segments")
     FUNCTION = "build_sequence"
     CATEGORY = "WanKeyframeBuilder"
 
@@ -510,9 +531,11 @@ class WanKeyframeBuilderContinuation:
         continuation_frames,
         continuation_strength_mode,
         continuation_strength,
-        continuation_strength_ceiling,
-        continuation_strength_floor,
+        continuation_strength_start,
+        continuation_strength_end,
         continuation_decay_rate,
+        place_first_keyframe,
+        first_keyframe_strength,
         frame_2,
         frame_3,
         frame_4,
@@ -570,12 +593,16 @@ class WanKeyframeBuilderContinuation:
         device = img1_prepared.device
         dtype = img1_prepared.dtype
 
-        # Fixed mid-gray background (0.5)
+        # Fixed mid-gray background (0.5) for standard output
         gray = torch.full((1, h, w, C), 0.5, device=device, dtype=dtype)
 
-        # Allocate outputs
+        # Allocate standard outputs
         images_out = gray.repeat(T, 1, 1, 1)  # [T, H, W, C]
         masks_out = torch.zeros((T, h, w), device=device, dtype=dtype)  # [T, H, W]
+
+        # === SVI OUTPUT 1: Reference Only ===
+        # Timeline filled entirely with image1 (for SVI-Shot reference padding)
+        svi_reference_only = img1_prepared[0].unsqueeze(0).repeat(T, 1, 1, 1)
 
         # Process continuation frames
         cont_frames_list = []
@@ -584,12 +611,12 @@ class WanKeyframeBuilderContinuation:
             if cont_img.ndim == 3:
                 cont_img = cont_img.unsqueeze(0)
 
-            # Take last N frames (or fewer if less provided)
+            # Take last N frames from previous video (in chronological order)
             num_cont = min(continuation_frames, cont_img.shape[0])
             cont_img = cont_img[-num_cont:]  # Take last N frames
 
-            # Reverse order: newest frame first (position 0), oldest last
-            cont_img = cont_img.flip(0)
+            # DO NOT reverse - keep chronological order
+            # First frame in cont_img is oldest, last frame is newest
 
             # Resize each frame if needed
             for i in range(cont_img.shape[0]):
@@ -606,24 +633,24 @@ class WanKeyframeBuilderContinuation:
                 cont_frames_list.append(frame[0])  # Store as [H, W, C]
 
         # Apply continuation frames at positions 0 to N-1
-        # Frame 0 = newest (highest strength), Frame N-1 = oldest (lowest strength)
         num_cont_applied = len(cont_frames_list)
         for i, cont_frame in enumerate(cont_frames_list):
             if i < T:  # Safety check
                 images_out[i] = cont_frame
+                svi_reference_only[i] = cont_frame  # Also apply to SVI reference output
 
                 # Calculate strength based on mode
                 if continuation_strength_mode == "uniform":
                     strength = continuation_strength
-                else:  # decay - exponential from ceiling to floor
+                else:  # decay - from start strength to end strength
                     if num_cont_applied > 1:
-                        t = i / (num_cont_applied - 1)  # 0 to 1
-                        # Exponential decay: ceiling at t=0, approaches floor as t->1
+                        t = i / (num_cont_applied - 1)  # 0 to 1 (0=first/oldest, 1=last/newest)
                         import math
+                        # Exponential decay from start to end
                         decay = math.exp(-continuation_decay_rate * t)
-                        strength = continuation_strength_floor + (continuation_strength_ceiling - continuation_strength_floor) * decay
+                        strength = continuation_strength_end + (continuation_strength_start - continuation_strength_end) * decay
                     else:
-                        strength = continuation_strength_ceiling
+                        strength = continuation_strength_start
 
                 masks_out[i] = strength
 
@@ -638,41 +665,83 @@ class WanKeyframeBuilderContinuation:
             frame_8,
         ][:N]
 
-        # Determine keyframe anchor indices
-        # Calculate positions as if image1 was at position 0, but don't place it
-        # image2+ keep their original spacing
-        
+        # Optionally place first timeline keyframe (image2) immediately after continuation frames
+        first_keyframe_placed_at = None
+        if place_first_keyframe and N > 0:
+            first_keyframe_position = num_cont_applied  # Right after continuation frames
+            if first_keyframe_position < T:
+                # Place image2 at this position
+                img2 = used_timeline_imgs[0][0]  # [H, W, C]
+                images_out[first_keyframe_position] = img2
+                svi_reference_only[first_keyframe_position] = img2
+                masks_out[first_keyframe_position] = first_keyframe_strength
+                first_keyframe_placed_at = first_keyframe_position
+
+        # Determine keyframe anchor indices for remaining keyframes
+        key_idx = []
         if N > 0:
             if spacing_mode == "manual":
                 key_idx = [max(0, min(T - 1, int(f))) for f in manual_frames]
                 key_idx = sorted(key_idx)
             else:
                 # Even spacing as if image1 was at 0
-                # Total keyframes for spacing calculation = N + 1 (including phantom image1)
                 total_for_spacing = N + 1
-                # Generate positions for all keyframes including phantom image1
                 all_positions = [round(i * (T - 1) / (total_for_spacing - 1)) for i in range(total_for_spacing)]
-                # Skip position 0 (image1's spot), take the rest
-                key_idx = all_positions[1:]
+                key_idx = all_positions[1:]  # Skip position 0 (image1's phantom spot)
 
-            # Apply timeline keyframes
-            for anchor, img_tensor in zip(key_idx, used_timeline_imgs):
+            # Apply timeline keyframes to standard output
+            # If first keyframe was already placed, skip it in this loop
+            start_idx = 1 if first_keyframe_placed_at is not None else 0
+            for idx in range(start_idx, len(key_idx)):
+                anchor = key_idx[idx]
+                img_tensor = used_timeline_imgs[idx]
                 img = img_tensor[0]  # [H, W, C]
-
-                # Place keyframe image
                 images_out[anchor] = img
 
-                # Set mask strength based on position
+                # Set mask strength
                 if anchor == key_idx[-1]:
                     masks_out[anchor] = last_strength
                 else:
                     masks_out[anchor] = middle_strength
 
-        # Build keyframes-only batch [N, H, W, C] (image1 + all connected timeline images)
+        # === SVI OUTPUT 2: Keyframe Segments ===
+        # Each keyframe fills its segment equally
+        svi_keyframe_segments = img1_prepared[0].unsqueeze(0).repeat(T, 1, 1, 1)
+
+        # Apply continuation frames first (same as standard output)
+        for i, cont_frame in enumerate(cont_frames_list):
+            if i < T:
+                svi_keyframe_segments[i] = cont_frame
+
+        # Divide remaining timeline into equal segments for each keyframe
+        if N > 0:
+            cont_end = num_cont_applied  # Where continuation frames end
+            remaining_frames = T - cont_end
+            
+            if remaining_frames > 0:
+                # Calculate segment boundaries
+                segment_size = remaining_frames / N
+                
+                for idx, img_tensor in enumerate(used_timeline_imgs):
+                    img = img_tensor[0]  # [H, W, C]
+                    
+                    # Calculate this keyframe's segment range
+                    start_pos = cont_end + int(idx * segment_size)
+                    end_pos = cont_end + int((idx + 1) * segment_size)
+                    
+                    # Last segment extends to end
+                    if idx == N - 1:
+                        end_pos = T
+                    
+                    # Fill this segment with the keyframe
+                    for pos in range(start_pos, end_pos):
+                        svi_keyframe_segments[pos] = img
+
+        # Build keyframes-only batch [N+1, H, W, C] (image1 + timeline images)
         keyframes_list = [img1_prepared] + used_timeline_imgs
         keyframes_batch = torch.cat(keyframes_list, dim=0)
 
-        return images_out, masks_out, keyframes_batch
+        return images_out, masks_out, keyframes_batch, svi_reference_only, svi_keyframe_segments
 
 
 NODE_CLASS_MAPPINGS = {
