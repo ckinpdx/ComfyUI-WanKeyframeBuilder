@@ -292,12 +292,13 @@ class WanKeyframeBuilderContinuation:
     first keyframe on the timeline.
     
     - Continuation frames (from previous generation) fill positions 0 to N-1
+    - image1 is placed on the timeline (with adjustable strength)
     - Keyframes (image2+) are distributed across remaining timeline
-    - image1 is included in keyframes output for HuMo but NOT placed on timeline
     - Strength can be uniform or decay from start to end
     
     SVI-Specific Outputs:
-    - svi_reference_only: Timeline filled entirely with image1 (for SVI-Shot reference padding)
+    - svi_reference_only: Timeline filled entirely with image1 (for SVI-Shot reference padding),
+      overridden at continuation/keyframe positions.
     - svi_keyframe_segments: Timeline where each segment is filled with its corresponding keyframe
     """
 
@@ -308,7 +309,7 @@ class WanKeyframeBuilderContinuation:
                 "image1": (
                     "IMAGE",
                     {
-                        "tooltip": "First reference image for HuMo. Included in keyframes output but NOT placed on timeline.",
+                        "tooltip": "First reference image. Placed on the timeline and used for SVI/reference.",
                     },
                 ),
                 "num_frames": (
@@ -407,7 +408,7 @@ class WanKeyframeBuilderContinuation:
                     "BOOLEAN",
                     {
                         "default": True,
-                        "tooltip": "Place image2 (first timeline keyframe) immediately after continuation frames.",
+                        "tooltip": "Place image1 on the timeline (after continuation if present, otherwise at frame 0).",
                     },
                 ),
                 "first_keyframe_strength": (
@@ -417,7 +418,7 @@ class WanKeyframeBuilderContinuation:
                         "min": 0.0,
                         "max": 1.0,
                         "step": 0.05,
-                        "tooltip": "Mask strength for first placed keyframe (if place_first_keyframe is enabled).",
+                        "tooltip": "Mask strength for image1 wherever it is placed.",
                     },
                 ),
                 "frame_2": (
@@ -552,7 +553,7 @@ class WanKeyframeBuilderContinuation:
         image8=None,
         continuation_image=None,
     ):
-        # image1 is required but only for keyframes output, not timeline
+        # image1 is required and is placed on the timeline (with adjustable strength)
         # Collect timeline keyframes (image2+)
         timeline_imgs = [
             image2,
@@ -570,7 +571,7 @@ class WanKeyframeBuilderContinuation:
         # Timeline images only (image2+ that are connected)
         available_timeline_imgs = [img for img in timeline_imgs if img is not None]
 
-        # Number of keyframes on timeline
+        # Number of keyframes on timeline (excluding image1, which is special)
         N = len(available_timeline_imgs)
 
         # Normalize image1 for reference
@@ -654,6 +655,21 @@ class WanKeyframeBuilderContinuation:
 
                 masks_out[i] = strength
 
+        # === Place image1 on the timeline with adjustable strength ===
+        # - If continuation frames exist: directly after them
+        # - If none: at frame 0
+        if place_first_keyframe:
+            if num_cont_applied > 0:
+                first_keyframe_position = num_cont_applied
+            else:
+                first_keyframe_position = 0
+
+            if first_keyframe_position < T:
+                img1_frame = img1_prepared[0]  # [H, W, C]
+                images_out[first_keyframe_position] = img1_frame
+                svi_reference_only[first_keyframe_position] = img1_frame
+                masks_out[first_keyframe_position] = first_keyframe_strength
+
         # Manual frame indices for timeline keyframes (image2+)
         manual_frames = [
             frame_2,
@@ -665,34 +681,20 @@ class WanKeyframeBuilderContinuation:
             frame_8,
         ][:N]
 
-        # Optionally place first timeline keyframe (image2) immediately after continuation frames
-        first_keyframe_placed_at = None
-        if place_first_keyframe and N > 0:
-            first_keyframe_position = num_cont_applied  # Right after continuation frames
-            if first_keyframe_position < T:
-                # Place image2 at this position
-                img2 = used_timeline_imgs[0][0]  # [H, W, C]
-                images_out[first_keyframe_position] = img2
-                svi_reference_only[first_keyframe_position] = img2
-                masks_out[first_keyframe_position] = first_keyframe_strength
-                first_keyframe_placed_at = first_keyframe_position
-
-        # Determine keyframe anchor indices for remaining keyframes
+        # Determine keyframe anchor indices for remaining keyframes (image2+)
         key_idx = []
         if N > 0:
             if spacing_mode == "manual":
                 key_idx = [max(0, min(T - 1, int(f))) for f in manual_frames]
                 key_idx = sorted(key_idx)
             else:
-                # Even spacing as if image1 was at 0
+                # Even spacing as if image1 was at a phantom position 0
                 total_for_spacing = N + 1
                 all_positions = [round(i * (T - 1) / (total_for_spacing - 1)) for i in range(total_for_spacing)]
-                key_idx = all_positions[1:]  # Skip position 0 (image1's phantom spot)
+                key_idx = all_positions[1:]  # Skip position 0 (reserved conceptually for image1)
 
-            # Apply timeline keyframes to standard output
-            # If first keyframe was already placed, skip it in this loop
-            start_idx = 1 if first_keyframe_placed_at is not None else 0
-            for idx in range(start_idx, len(key_idx)):
+            # Apply timeline keyframes (image2+)
+            for idx in range(len(key_idx)):
                 anchor = key_idx[idx]
                 img_tensor = used_timeline_imgs[idx]
                 img = img_tensor[0]  # [H, W, C]
@@ -713,7 +715,7 @@ class WanKeyframeBuilderContinuation:
             if i < T:
                 svi_keyframe_segments[i] = cont_frame
 
-        # Divide remaining timeline into equal segments for each keyframe
+        # Divide remaining timeline into equal segments for each keyframe (image2+)
         if N > 0:
             cont_end = num_cont_applied  # Where continuation frames end
             remaining_frames = T - cont_end
@@ -735,7 +737,8 @@ class WanKeyframeBuilderContinuation:
                     
                     # Fill this segment with the keyframe
                     for pos in range(start_pos, end_pos):
-                        svi_keyframe_segments[pos] = img
+                        if 0 <= pos < T:
+                            svi_keyframe_segments[pos] = img
 
         # Build keyframes-only batch [N+1, H, W, C] (image1 + timeline images)
         keyframes_list = [img1_prepared] + used_timeline_imgs
